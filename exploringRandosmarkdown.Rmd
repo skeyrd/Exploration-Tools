@@ -1,0 +1,494 @@
+---
+  title: "CFE Initial Exploration"
+  output: html_document
+---
+
+```{r results='hide', message=FALSE, warning=FALSE}
+
+
+#Libraries
+library(tidyverse)
+library(rmarkdown)
+library(RODBC)
+library(RODBCext)
+library(optparse)
+library(data.table)
+library(Matrix)
+library(outliers)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(pastecs)
+library(ggmap)
+library(plotly)
+
+library(rgeos)
+library(sp)
+
+
+```
+###### Set your database connection info
+
+```{r results='hide', message=FALSE, warning=FALSE}
+
+server <- "USINTERN13\\SQLEXPRESS"
+database <-"test1"
+#startDate <- "20160101" 
+#endDate <- "20170202"
+```
+
+###### Reads in unique 108 zones
+
+
+```{r results='hide', message=FALSE, warning=FALSE}
+allNames <- as.data.frame(read.csv("C:/Users/sspinetto/Desktop/allnames.csv", stringsAsFactors = FALSE))
+
+allLats <- as.data.frame(read.csv("C:/Users/sspinetto/Desktop/weatherStationList.csv", stringsAsFactors = FALSE))
+
+
+f <- function(s) strsplit(s, "_")
+names <-sapply(allNames, f)
+
+uniqueNames <- colsplit(allNames$mx_cfe_manzanillo_one_load_act, pattern="_", names = c("0","1","name","4","5","6"))
+
+finalNames <- unique(uniqueNames$name)
+finalNames[[53]]<- "acapulco"
+finalNames<- sort(finalNames)
+
+```
+
+
+##### This is the function that gets the % of non zeroes for each load type, later it is looped through for each zone
+
+
+```{r results='hide', message=FALSE, warning=FALSE}
+
+
+getMyZeros <- function (server, database, finalNames) {
+
+tryCatch({ 
+  
+necName <- finalNames
+  
+fileName1 <- paste0("mx_cfe_",necName)
+  
+#set connection
+setServ <- paste0("driver={SQL Server};server=",server,";database=",database,";trusted_connection=true")
+myServer <- odbcDriverConnect(setServ)
+
+# perform queries to zero, one, two, three
+query0 <- paste0("select date,time,load_act from ",fileName1,"_zero_load_act"
+ #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+                 )
+load0 <-  sqlQuery(myServer,query0)
+
+
+query1 <- paste0("select date,time,load_act from ",fileName1,"_three_load_act"
+                 #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+)
+load3 <-  sqlQuery(myServer,query1)
+
+query2 <- paste0("select date,time,load_act from ",fileName1,"_two_load_act"
+                 #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+)
+load2 <-  sqlQuery(myServer,query2)
+
+query3 <- paste0("select date,time,load_act from ",fileName1,"_one_load_act"
+                 #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+)
+load1 <-  sqlQuery(myServer,query3)
+
+
+# trunc for compare
+trunc0 <- head(load0, -4872)
+trunc1 <- head(load1, -3864)
+trunc2 <- head(load2, -2520)
+trunc3 <- load3
+
+
+#combine
+
+fullLoad <- as.data.frame(cbind(trunc0,trunc1,trunc2,trunc3))
+
+
+colnames(fullLoad) <- c("date_0", "time_0", "load_act_0","date_1", "time_1", "load_act_1","date_2", "time_2", "load_act_2",
+                        "date_3", "time_3", "load_act_3")
+                      
+## sanity check to make sure columns align
+# 
+# head(fullLoad)
+
+## clean up
+
+
+compareLoad <- data.frame(fullLoad$date_0,fullLoad$time_0,fullLoad$load_act_0,
+                          fullLoad$load_act_1,fullLoad$load_act_2,fullLoad$load_act_3)
+
+
+zeroPercent0 <- mean(!compareLoad$fullLoad.load_act_0)
+zeroPercent1 <- mean(!compareLoad$fullLoad.load_act_1)
+zeroPercent2 <- mean(!compareLoad$fullLoad.load_act_2)
+zeroPercent3 <- mean(!compareLoad$fullLoad.load_act_3)
+
+
+zeroVector <- c(zeroPercent0,zeroPercent1,zeroPercent2,zeroPercent3)
+# 
+# print (zeroPercent0)
+# print (zeroPercent1)
+# print (zeroPercent2)
+# print (zeroPercent3)
+
+
+### lets find the differences
+
+compareLoad$dif0to1 <- compareLoad$fullLoad.load_act_0 - compareLoad$fullLoad.load_act_1
+compareLoad$dif1to2 <- compareLoad$fullLoad.load_act_1 - compareLoad$fullLoad.load_act_2
+compareLoad$dif2to3 <- compareLoad$fullLoad.load_act_2 - compareLoad$fullLoad.load_act_3
+compareLoad$dif0to3 <- compareLoad$fullLoad.load_act_0 - compareLoad$fullLoad.load_act_3
+
+
+
+
+summary(compareLoad$dif0to1)
+summary(compareLoad$dif1to2)
+summary(compareLoad$dif2to3)
+summary(compareLoad$dif0to3)
+}, error= function(e){})
+return(zeroVector)
+}
+
+```
+
+##### here we have our function to get summaries
+
+```{r results='hide', message=FALSE, warning=FALSE}
+
+
+getMySummaries <- function (server, database, finalNames) {
+  
+  tryCatch({ 
+    
+
+    
+    fileName1 <- paste0("mx_cfe_", finalNames)
+    
+    #set connection
+    setServ <- paste0("driver={SQL Server};server=",server,";database=",database,";trusted_connection=true")
+    myServer <- odbcDriverConnect(setServ)
+    
+    # perform queries to zero, one, two, three
+    query0 <- paste0("select date,time,load_act from ",fileName1,"_zero_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load0 <-  sqlQuery(myServer,query0)
+    
+    
+    query1 <- paste0("select date,time,load_act from ",fileName1,"_three_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load3 <-  sqlQuery(myServer,query1)
+    
+    query2 <- paste0("select date,time,load_act from ",fileName1,"_two_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load2 <-  sqlQuery(myServer,query2)
+    
+    query3 <- paste0("select date,time,load_act from ",fileName1,"_one_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load1 <-  sqlQuery(myServer,query3)
+    
+    
+    # trunc for compare
+    trunc0 <- head(load0, -4872)
+    trunc1 <- head(load1, -3864)
+    trunc2 <- head(load2, -2520)
+    trunc3 <- load3
+    
+    
+    #combine
+    
+    fullLoad <- as.data.frame(cbind(trunc0,trunc1,trunc2,trunc3))
+    
+    
+    colnames(fullLoad) <- c("date_0", "time_0", "load_act_0","date_1", "time_1", "load_act_1","date_2", "time_2", "load_act_2",
+                            "date_3", "time_3", "load_act_3")
+    
+    ## sanity check to make sure columns align
+    # 
+    # head(fullLoad)
+    
+    ## clean up
+    
+    
+    compareLoad <- data.frame(fullLoad$date_0,fullLoad$time_0,fullLoad$load_act_0,
+                              fullLoad$load_act_1,fullLoad$load_act_2,fullLoad$load_act_3)
+    
+    
+    zeroPercent0 <- mean(!compareLoad$fullLoad.load_act_0)
+    zeroPercent1 <- mean(!compareLoad$fullLoad.load_act_1)
+    zeroPercent2 <- mean(!compareLoad$fullLoad.load_act_2)
+    zeroPercent3 <- mean(!compareLoad$fullLoad.load_act_3)
+    
+    
+    zeroVector <- c(zeroPercent0,zeroPercent1,zeroPercent2,zeroPercent3)
+    # 
+    # print (zeroPercent0)
+    # print (zeroPercent1)
+    # print (zeroPercent2)
+    # print (zeroPercent3)
+    
+    
+    ### lets find the differences
+    
+    compareLoad$dif0to1 <- compareLoad$fullLoad.load_act_0 - compareLoad$fullLoad.load_act_1
+    compareLoad$dif1to2 <- compareLoad$fullLoad.load_act_1 - compareLoad$fullLoad.load_act_2
+    compareLoad$dif2to3 <- compareLoad$fullLoad.load_act_2 - compareLoad$fullLoad.load_act_3
+    compareLoad$dif0to3 <- compareLoad$fullLoad.load_act_0 - compareLoad$fullLoad.load_act_3
+    
+    
+  
+    
+    mean01 <- summary(load0$load_act)
+    
+    sumVector <- mean01
+    
+  }, error= function(e){})
+  return(sumVector)
+}
+
+```
+#### third function to get something else :P
+
+```{r}
+getMyOther <- function (server, database, finalNames) {
+  
+  tryCatch({ 
+    
+
+    
+    fileName1 <- paste0("mx_cfe_", finalNames)
+    
+    #set connection
+    setServ <- paste0("driver={SQL Server};server=",server,";database=",database,";trusted_connection=true")
+    myServer <- odbcDriverConnect(setServ)
+    
+    # perform queries to zero, one, two, three
+    query0 <- paste0("select date,time,load_act from ",fileName1,"_zero_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load0 <-  sqlQuery(myServer,query0)
+    
+    
+    query1 <- paste0("select date,time,load_act from ",fileName1,"_three_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load3 <-  sqlQuery(myServer,query1)
+    
+    query2 <- paste0("select date,time,load_act from ",fileName1,"_two_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load2 <-  sqlQuery(myServer,query2)
+    
+    query3 <- paste0("select date,time,load_act from ",fileName1,"_one_load_act"
+                     #     ," where date > ",startDate," AND date < ", endDate   #uncomment this line if using custom date set 
+    )
+    load1 <-  sqlQuery(myServer,query3)
+    
+    
+    # trunc for compare
+    trunc0 <- head(load0, -4872)
+    trunc1 <- head(load1, -3864)
+    trunc2 <- head(load2, -2520)
+    trunc3 <- load3
+    
+    
+    #combine
+    
+    fullLoad <- as.data.frame(cbind(trunc0,trunc1,trunc2,trunc3))
+    
+    
+    colnames(fullLoad) <- c("date_0", "time_0", "load_act_0","date_1", "time_1", "load_act_1","date_2", "time_2", "load_act_2",
+                            "date_3", "time_3", "load_act_3")
+    
+    ## sanity check to make sure columns align
+    # 
+    # head(fullLoad)
+    
+    ## clean up
+    
+    
+    compareLoad <- data.frame(fullLoad$date_0,fullLoad$time_0,fullLoad$load_act_0,
+                              fullLoad$load_act_1,fullLoad$load_act_2,fullLoad$load_act_3)
+    
+    
+    
+
+    ### lets find the differences
+    
+    compareLoad$dif0to1 <- compareLoad$fullLoad.load_act_0 - compareLoad$fullLoad.load_act_1
+    compareLoad$dif1to2 <- compareLoad$fullLoad.load_act_1 - compareLoad$fullLoad.load_act_2
+    compareLoad$dif2to3 <- compareLoad$fullLoad.load_act_2 - compareLoad$fullLoad.load_act_3
+    compareLoad$dif0to3 <- compareLoad$fullLoad.load_act_0 - compareLoad$fullLoad.load_act_3
+    
+  
+    
+    difVector <- data_frame(compareLoad$fullLoad.date_0, compareLoad$fullLoad.time_0,
+                            compareLoad$fullLoad.load_act_0,compareLoad$fullLoad.load_act_1,compareLoad$fullLoad.load_act_2,
+                            compareLoad$fullLoad.load_act_3,
+                            compareLoad$dif0to1,compareLoad$dif1to2,compareLoad$dif2to3,compareLoad$dif0to3)
+    
+    check01<- intersect(difVector$`compareLoad$fullLoad.load_act_0`,difVector$`compareLoad$fullLoad.load_act_1`)
+    check01<- intersect(difVector$`compareLoad$fullLoad.load_act_0`,difVector$`compareLoad$fullLoad.load_act_1`)
+    check01<- intersect(difVector$`compareLoad$fullLoad.load_act_0`,difVector$`compareLoad$fullLoad.load_act_1`)
+     length(check)
+    
+    
+    
+    
+  }, error= function(e){})
+ 
+  return(difVector)
+}
+
+
+```
+
+
+
+##### First Loop, Calculates Non Zeroes
+
+
+```{r,warning=FALSE}
+
+loop_zero_data <- vector("list", length(finalNames))
+
+for(x in seq_along(finalNames)){
+  
+  loop_zero_data[[x]] <- getMyZeros(server,database,finalNames[[x]])
+}
+
+names(loop_zero_data) <- finalNames
+
+### prints % of zeroes in each data set, load0, load1, load2, load3
+
+head(loop_zero_data)
+
+```
+
+#####second Loop calculates summaries
+
+```{r, warning= FALSE}
+
+loop_sum_data <- vector("list", length(finalNames))
+
+for(x in seq_along(finalNames)){
+  
+  loop_sum_data[[x]] <- getMySummaries(server,database,finalNames[[x]])
+}
+names(loop_sum_data) <- finalNames
+
+### prints % of zeroes in each data set, load0, load1, load2, load3
+
+head(loop_sum_data)
+
+```
+
+
+###third loop 4 for differences between 01, 12, 23, 03
+```{r, warning=FALSE}
+
+loop_dif_data <- vector("list", length(finalNames))
+
+for(x in seq_along(finalNames)){
+  
+  loop_dif_data[[x]] <- getMyOther(server,database,finalNames[[x]])
+}
+names(loop_dif_data) <- finalNames
+
+
+
+
+
+```
+
+#### Put Summary Data in Table 4 plotting
+
+```{r, warning=FALSE}
+
+  getMedian <- ldply(loop_sum_data)
+  
+  plot_ly(getMedian, y= ~Median, type='scatter', mode='markers', text= ~.id)
+
+```
+
+#### lets see what else we can visualize that's useful.....
+
+```{r, message=FALSE,warning=FALSE}
+
+
+
+lookupNames <- sapply(finalNames, paste0, " Mexico")
+lookupNames2<- sapply(allLats$stationname, paste0, "Mexico")
+lonlat <- geocode(lookupNames) 
+set1<- data.frame(p1=lonlat$lon,p2=lonlat$lat)
+lonlat2<-geocode(lookupNames2)
+set2<- data.frame(p1=lonlat2$lon,p2=lonlat2$lat)
+cities <- cbind(finalNames, lonlat)
+
+allLats <- as.data.frame(read.csv("C:/Users/sspinetto/Desktop/magicMaker.csv", stringsAsFactors = FALSE))
+
+
+
+f <- function(s) strsplit(s, split = "(?<=[a-zA-Z])\\s*(?=[0-9])", perl = TRUE)
+names <-as.data.frame(sapply(allLats$cities, f))
+
+
+final_df <- as.data.frame(t(names))
+
+uniqueLats <- colsplit(final_df$V2, pattern=" ", names = c("lat","long"))
+#cities2 <- cbind(uniqueLats$name,uniqueLats$lat,uniqueLats$long)
+latlongs2<- as.data.frame(cbind(uniqueLats$lat,uniqueLats$long))
+
+
+library(devtools)
+install_github("dkahle/ggmap")
+library(ggmap)
+
+myPlace <- "Moscow"
+    myZoom <- 5
+    
+
+    myMap <- get_map(location=c(lon = mean(latlongs2$V2), lat = mean(latlongs2$V1)) , zoom= 5, maptype="satellite", scale = 2)
+    mapper <- ggmap(myMap)
+    
+    mapper+ geom_point(data=latlongs2, aes(x=V2, y=V1), size=2,colour= "red")
+    #+geom_text(data =cities,aes(label=.id),hjust=0, vjust=0, size=2)
+    
+    
+    
+
+```
+
+###What's next !? -- lets find closest weather station to each!
+
+```{r}
+
+distp1p2 <- function(p1,p2) {
+    dst <- sqrt((p1[1]-p2[1])^2+(p1[2]-p2[2])^2)
+    return(dst)
+}
+
+dist2b <- function(y) which.min(apply(set2, 1, function(x) min(distp1p2(x,y))))
+bestStation<- apply(set1, 1, dist2b)
+
+
+stationKey<- data.frame(allLats$stationid,allLats$stationname)
+
+
+head(bestStation)
+head(stationKey)
+
+
+```
+
